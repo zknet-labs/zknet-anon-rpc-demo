@@ -1,0 +1,27 @@
+# VPS-only: runs only mix-client, dials shared VPS gateway at tcp://185.92.181.101:30004
+# The mixnet runs on the VPS; this container only runs the client daemon + services.
+services:
+  mix-client:
+    image: zeros/mixnet-node:amd64
+    container_name: mix-client
+    command: >
+      sh -c "
+        kpclientd -c /var/lib/katzenpost/client/client.toml & PID=$$!;
+        echo 'Waiting for PKI doc...';
+        for i in $$(seq 1 30); do
+          /usr/local/bin/fetch -f /var/lib/katzenpost/client/thinclient.toml && break;
+          sleep 2;
+        done;
+        echo 'PKI doc available';
+        wait $$PID
+      "
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/fetch", "-f", "/var/lib/katzenpost/client/thinclient.toml"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - ./config/mixnet:/var/lib/katzenpost
+    network_mode: host
+    restart: unless-stopped

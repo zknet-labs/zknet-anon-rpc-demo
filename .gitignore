@@ -1,0 +1,41 @@
+# Build artifacts
+walletshield/walletshield-kps
+kps-sendtx/kps-sendtx
+kps-monitor/kps-monitor
+zkn-anon-rpc-worker/dist/
+zkn-anon-rpc-worker/node_modules/
+
+# Auto-generated
+walletshield/kps.key
+walletshield/kps.key.pub
+config/mixnet/pkidata/
+
+# Runtime artifacts under config/mixnet (never commit these)
+config/mixnet/*/katzenpost.log
+config/mixnet/*/persistence.db
+config/mixnet/*/spool.db
+config/mixnet/*/selfcheck.toml
+config/mixnet/*/management_sock
+config/mixnet/*/mixkey-*.key
+config/mixnet/**/*.socket
+config/mixnet/**/*.sock
+config/mixnet/servicenode1/http-proxy-server
+config/mixnet/servicenode1/chatd/
+config/mixnet/servicenode1/kaetzhen.tmp
+config/mixnet/servicenode1/katzenpost.toml.bak
+config/mixnet/servicenode1/katzenpost.toml.fix
+config/mixnet/servicenode1/katzenpost.toml.orig
+config/mixnet/servicenode1/katzenpost.toml.test
+
+# Env
+.env
+
+# Secrets / keys
+*.key
+*.pem
+*.p12
+keystore/
+backup/
+
+# Logs
+*.log

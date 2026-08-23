@@ -1,0 +1,303 @@
+#!/bin/bash
+# ZKNetwork / Anon-RPC Demo — one-shot bootstrap + start (VPS-only)
+#   First run:  git clone && cd zknet-anon-rpc-demo && ./start.sh
+#   Subsequent: ./start.sh  (skips already-built artifacts)
+#
+# Dials the shared VPS mixnet gateway (tcp://185.92.181.101:30004).
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJECT_DIR"
+
+# Reject legacy --local flag with helpful message
+for arg in "$@"; do
+  case "$arg" in
+    --local) echo "This demo is VPS-only; --local is no longer supported." >&2; exit 1 ;;
+    --help|-h) echo "Usage: ./start.sh" >&2; exit 0 ;;
+    *) echo "Unknown arg: $arg" >&2; exit 1 ;;
+  esac
+done
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+ok()   { echo -e "  ${GREEN}[OK]${NC} $1"; }
+warn() { echo -e "  ${YELLOW}[WARN]${NC} $1"; }
+fail() { echo -e "  ${RED}[FAIL]${NC} $1"; exit 1; }
+
+echo "============================================"
+echo " ZKNetwork Anon-RPC — Bootstrap + Start"
+echo " $(date)"
+echo "============================================"
+
+# ── 0. Prerequisites ──────────────────────────────────────────────
+
+echo ""
+echo "── Checking prerequisites ──"
+
+if ! docker info >/dev/null 2>&1; then
+  fail "Docker is not running. Start Docker and retry."
+fi
+ok "Docker running"
+
+if [ ! -f katzenpost/go.mod ]; then
+  fail "katzenpost/ source missing. Run: git submodule update --init"
+else
+  ok "katzenpost source present (vendored)"
+fi
+
+# ── 1. Build mixnet Docker image ──────────────────────────────────
+
+echo ""
+echo "── Building mixnet image ──"
+MIXNET_IMAGE="zeros/mixnet-node:amd64"
+if docker image inspect "$MIXNET_IMAGE" >/dev/null 2>&1; then
+  ok "mixnet image already built: $MIXNET_IMAGE"
+else
+  echo "  Building Docker image (first time: ~15 min)..."
+  docker build -t "$MIXNET_IMAGE" -f Dockerfile.mixnet . 2>&1 || fail "Docker build failed"
+  ok "mixnet image built: $MIXNET_IMAGE"
+fi
+
+# ── 2. Build Go tools (kps-client, kps-sendtx) ────────────────────
+# walletshield-kps and kps-monitor are baked into the mixnet image
+# (/usr/local/bin/*) by Dockerfile.mixnet, so no separate build is needed.
+
+echo ""
+echo "── Building Go tools ──"
+
+build_go_binary() {
+  local dir="$1" binary="$2"
+  if [ -x "$dir/$binary" ]; then
+    ok "$binary present"
+    return
+  fi
+  echo "  Building $binary..."
+  docker run --rm -v "$PROJECT_DIR/$dir:/src" -w /src golang:latest \
+    go build -trimpath -o "$binary" . 2>&1 || warn "$binary build skipped (optional)"
+  if [ -x "$dir/$binary" ]; then
+    ok "$binary built"
+  fi
+}
+
+build_go_binary kps-client   kps-client
+build_go_binary kps-sendtx   kps-sendtx
+
+# ── 2b. Check for port conflicts ──────────────────────────────────
+
+echo ""
+echo "── Checking for port conflicts ──"
+PORTS_NEEDED="9200 9201 9205 9206 3517"
+PORT_CONFLICT=""
+for port in $PORTS_NEEDED; do
+  pid=$(fuser "$port/tcp" 2>/dev/null | awk '{print $2}' || true)
+  if [ -n "$pid" ]; then
+    proc=$(ps -p "$pid" -o comm= 2>/dev/null || echo "pid=$pid")
+    # Allow our own dashboard (3517) and mix-client container processes
+    if [ "$port" = "3517" ] && echo "$proc" | grep -q python; then
+      continue
+    fi
+    PORT_CONFLICT="${PORT_CONFLICT}  :$port used by $proc (pid $pid)\n"
+  fi
+done
+if [ -n "$PORT_CONFLICT" ]; then
+  warn "Port conflicts detected (stop these first):"
+  printf "$PORT_CONFLICT"
+  echo "  Run: fuser -k 9200/tcp 9201/tcp 9205/tcp 9206/tcp 2>/dev/null"
+  echo "  Or:  ./stop.sh"
+else
+  ok "no port conflicts"
+fi
+
+echo ""
+echo "── Starting mixnet containers ──"
+echo "  mode: VPS (dials shared gateway tcp://185.92.181.101:30004)"
+COMPOSE_CMD=(docker compose)
+
+RUNNING_MARKER="mix-client"
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "$RUNNING_MARKER"; then
+  ok "mix-client already running"
+else
+  "${COMPOSE_CMD[@]}" up -d 2>&1 || fail "docker compose up failed"
+  ok "containers starting..."
+fi
+
+# ── 5. Wait for containers ────────────────────────────────────────
+
+echo ""
+echo "── Waiting for containers ──"
+CONTAINERS=(mix-client)
+for container in "${CONTAINERS[@]}"; do
+  for i in $(seq 1 60); do
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "$container"; then
+      break
+    fi
+    sleep 1
+  done
+done
+ok "$(echo "${CONTAINERS[@]}" | wc -w) containers up"
+
+# ── 5b. Ensure container DNS ───────────────────────────────────────
+# After host reboot / docker recreation, some containers can end up with an
+# empty /etc/resolv.conf (no nameservers), which breaks the servicenode's
+# http_proxy upstream lookups (DNS resolution of the RPC endpoint). Fix by
+# writing the host's nameservers into any container missing them.
+
+echo ""
+echo "── Ensuring container DNS ──"
+HOST_NS=$(grep -m3 '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | head -3)
+if [ -z "$HOST_NS" ]; then
+  warn "host has no nameservers in /etc/resolv.conf — skipping DNS fix"
+else
+  NS_ENTRIES=$(printf 'nameserver %s\n' $HOST_NS)
+  DNS_FIXED=0
+  for container in "${CONTAINERS[@]}"; do
+    if ! docker exec "$container" sh -c "grep -q '^nameserver' /etc/resolv.conf" 2>/dev/null; then
+      docker exec "$container" sh -c "printf '%b\n' '$NS_ENTRIES' > /etc/resolv.conf"
+      ok "$container: resolv.conf fixed ($(echo $HOST_NS | tr ' ' ', '))"
+      DNS_FIXED=1
+    fi
+  done
+  if [ "$DNS_FIXED" -eq 0 ]; then
+    ok "all containers have nameservers"
+  fi
+fi
+
+# ── 6. Wait for PKI consensus ─────────────────────────────────────
+
+echo ""
+echo "── Waiting for PKI consensus ──"
+echo "    (VPS consensus is already live — just waiting for kpclientd to connect)"
+
+PKI_OK="no"
+START_TS=$(date +%s)
+for i in $(seq 1 360); do
+  if docker exec mix-client sh -c "/usr/local/bin/fetch -f /var/lib/katzenpost/client/thinclient.toml" >/dev/null 2>&1; then
+    PKI_OK="yes"
+    break
+  fi
+  if [ $(( i % 24 )) -eq 0 ]; then
+    echo "    ... still waiting for PKI ($(( ( $(date +%s) - START_TS ) / 60 ))m elapsed)"
+  fi
+  if [ $(( $(date +%s) - START_TS )) -ge 120 ]; then
+    break
+  fi
+  sleep 5
+done
+
+if [ "$PKI_OK" = "yes" ]; then
+  ok "PKI consensus reached"
+else
+  warn "PKI still converging — services may take longer. Re-run ./start.sh to retry."
+fi
+
+# ── 7. Start services ─────────────────────────────────────────────
+
+echo ""
+echo "── Starting services ──"
+
+# http-proxy-client (inside mix-client)
+if docker exec mix-client sh -c "pidof http-proxy-client >/dev/null 2>&1" 2>/dev/null; then
+  ok "http-proxy-client already running"
+else
+  docker exec -d mix-client \
+    /usr/local/bin/http-proxy-client \
+    -cfg /var/lib/katzenpost/client/thinclient.toml \
+    -port 9205 -ep http_proxy -log_level INFO
+  ok "http-proxy-client started on :9205"
+fi
+
+# walletshield-kps (inside mix-client; binary baked into image at /usr/local/bin)
+# NOTE: must run with cwd=/var/lib/katzenpost/client so the relative kps.key
+# path resolves and the KPS listener (:9201/UDP) binds correctly.
+if docker exec mix-client sh -c "pidof walletshield-kps >/dev/null 2>&1" 2>/dev/null; then
+  ok "walletshield-kps already running"
+else
+  docker exec -d -w /var/lib/katzenpost/client mix-client \
+    /usr/local/bin/walletshield-kps \
+    -config /var/lib/katzenpost/client/thinclient.toml \
+    -listen 127.0.0.1:9200 \
+    -kps_listen 0.0.0.0:9201 \
+    -log_level INFO
+  ok "walletshield-kps started :9200 (KPS :9201)"
+fi
+
+# kps-monitor (inside mix-client; binary baked into image at /usr/local/bin)
+if docker exec mix-client sh -c "pidof kps-monitor >/dev/null 2>&1" 2>/dev/null; then
+  ok "kps-monitor already running"
+else
+  docker exec -d mix-client \
+    /usr/local/bin/kps-monitor \
+    -boot http://127.0.0.1:9200 \
+    -http :9206 \
+    -interval 15s
+  ok "kps-monitor started on :9206"
+fi
+
+# ── 8. Dashboard ──────────────────────────────────────────────────
+
+echo ""
+echo "── Starting dashboard ──"
+DASHBOARD_DIR="$PROJECT_DIR/dashboard"
+
+if [ ! -d "$DASHBOARD_DIR/node_modules" ]; then
+  echo "  Installing npm dependencies..."
+  (cd "$DASHBOARD_DIR" && npm install) 2>&1 || warn "npm install had warnings"
+fi
+
+if [ ! -f "$DASHBOARD_DIR/dist/index.html" ]; then
+  echo "  Building frontend..."
+  (cd "$DASHBOARD_DIR" && npx vite build) 2>&1 || warn "vite build failed"
+fi
+
+fuser -k 3517/tcp 2>/dev/null || true
+sleep 1
+
+cd "$DASHBOARD_DIR"
+nohup python3 server.py > /tmp/dashboard.log 2>&1 &
+DASHBOARD_PID=$!
+ok "dashboard started http://127.0.0.1:3517 (PID $DASHBOARD_PID)"
+
+# ── 9. Health check and summary ───────────────────────────────────
+
+echo ""
+echo "============================================"
+echo " ZKNetwork Anon-RPC — Live"
+echo " $(date)"
+echo "============================================"
+echo ""
+echo "  HTTP proxy:   http://127.0.0.1:9205/"
+echo "  WalletShield: http://127.0.0.1:9200/"
+echo "  KPS:          127.0.0.1:9201"
+echo "  KPS Monitor:  http://127.0.0.1:9206/stats"
+echo "  Dashboard:    http://127.0.0.1:3517"
+echo ""
+
+sleep 5
+echo "── Quick health check ──"
+HC_OK=0
+HC_FAIL=0
+
+check() {
+  local label="$1" cmd="$2"
+  if eval "$cmd" >/dev/null 2>&1; then
+    ok "$label" ; HC_OK=$((HC_OK+1))
+  else
+    warn "$label" ; HC_FAIL=$((HC_FAIL+1))
+  fi
+}
+
+check "walletshield boot"     'curl -s --max-time 5 http://127.0.0.1:9200/boot | grep -q kpsAddr'
+check "KPS monitor"           'curl -s --max-time 5 http://127.0.0.1:9206/stats | grep -q connected'
+check "dashboard"             'curl -s --max-time 5 http://127.0.0.1:3517/api/containers | grep -q active'
+check "HTTP proxy"            'timeout 40 curl -s --max-time 35 -X POST http://127.0.0.1:9205/ -H "Host: ethereum-sepolia.publicnode.com" -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}" | grep -q result'
+
+echo ""
+if [ $HC_FAIL -eq 0 ]; then
+  echo -e "${GREEN}All $HC_OK checks passed.${NC}  Run ./demo.sh for the full test suite."
+else
+  echo -e "${YELLOW}$HC_OK passed, $HC_FAIL failed.${NC}  Check logs above, may need more time for consensus."
+fi
+echo ""
+echo "To stop:  ./stop.sh"

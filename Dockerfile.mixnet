@@ -1,0 +1,70 @@
+FROM golang:latest AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    libsnappy-dev \
+    liblz4-dev \
+    libzstd-dev \
+    zlib1g-dev \
+    patch \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN cd /tmp \
+    && git clone --branch v10.2.1 --depth 1 https://github.com/facebook/rocksdb.git \
+    && cd rocksdb \
+    && PORTABLE=1 make -j"$(nproc)" shared_lib \
+       EXTRA_CFLAGS="-O2" EXTRA_CXXFLAGS="-O2" \
+    && cp -a librocksdb.so* /usr/local/lib/ \
+    && cp -a include/* /usr/local/include/ \
+    && cd /tmp && rm -rf rocksdb
+
+COPY katzenpost/ /src/katzenpost/
+
+COPY patches/fix-decoy-sender-nil-pointer.patch /tmp/
+RUN cd /src/katzenpost && \
+    patch -p1 --forward < /tmp/fix-decoy-sender-nil-pointer.patch 2>/dev/null; \
+    sed -i 's/if rates.messageOrLoop <= 0 {/if rates == nil || rates.messageOrLoop <= 0 {/' client/sender.go
+
+RUN mkdir /dest && \
+    cd /src/katzenpost && \
+    export CGO_ENABLED=1 && \
+    for cmd in dirauth server courier echo-plugin http-proxy-server http-proxy-client kpclientd fetch; do \
+        cd /src/katzenpost/cmd/$cmd && \
+        go build -buildvcs=false -trimpath -ldflags="-buildid=" -o /dest/$cmd . && \
+        echo "  built $cmd"; \
+    done
+
+COPY walletshield/ /src/walletshield/
+WORKDIR /src/walletshield
+RUN export CGO_ENABLED=1 && \
+    go build -buildvcs=false -trimpath -ldflags="-buildid=" -o /dest/walletshield-kps . && \
+    echo "  built walletshield-kps"
+
+COPY kps-monitor/ /src/kps-monitor/
+WORKDIR /src/kps-monitor
+RUN export CGO_ENABLED=1 && \
+    go build -buildvcs=false -trimpath -ldflags="-buildid=" -o /dest/kps-monitor . && \
+    echo "  built kps-monitor"
+
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    adduser \
+    libsnappy1v5 \
+    liblz4-1 \
+    libzstd1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system --gid 1001 app \
+    && adduser --system --uid 1001 --ingroup app --no-create-home app
+
+COPY --from=builder /usr/local/lib/librocksdb.so* /usr/local/lib/
+COPY --from=builder /dest/* /usr/local/bin/
+
+RUN ldconfig
+
+# NOTE: the mixnet daemons run as root because they must read/write the
+# host bind-mounted config volume (owned by the host user) and the
+# per-node runtime state (logs, mixkey files, persistence DBs) in it.
+USER root
