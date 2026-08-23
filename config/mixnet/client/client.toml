@@ -1,4 +1,6 @@
-# WARNING: This file contains real VPS key material and IP addresses.
+# WARNING: This file is generated from client.toml.template by scripts/gen-client-config.sh
+# Do NOT edit directly — edit .env and re-run the script.
+# Contains real VPS key material and IP addresses.
 # Regenerate from the VPS with: ./scripts/sync-vps-config.sh
 # Do NOT commit production keys to public repositories.
 PKISignatureScheme = "Ed25519"

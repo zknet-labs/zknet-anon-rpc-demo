@@ -267,6 +267,28 @@ if [ ! -f "$DASHBOARD_DIR/dist/index.html" ]; then
   (cd "$DASHBOARD_DIR" && npx vite build) 2>&1 || warn "vite build failed"
 fi
 
+# ── 9b. Build KPS Worker bundle ───────────────────────────────────
+
+echo ""
+echo "── Building KPS Worker bundle ──"
+WORKER_DIR="$PROJECT_DIR/zkn-anon-rpc-worker"
+
+if [ ! -d "$WORKER_DIR/node_modules" ]; then
+  echo "  Installing npm dependencies..."
+  (cd "$WORKER_DIR" && npm install) 2>&1 || warn "worker npm install had warnings"
+fi
+
+if [ ! -f "$WORKER_DIR/dist/worker.js" ]; then
+  echo "  Building worker bundle..."
+  (cd "$WORKER_DIR" && npm run build) 2>&1 || warn "worker build failed"
+fi
+
+# Also compute worker hash for reference
+if [ -f "$WORKER_DIR/dist/worker.js" ]; then
+  WORKER_HASH=$(cd "$WORKER_DIR" && npm run hash 2>/dev/null || true)
+  ok "KPS Worker bundle ready (hash: ${WORKER_HASH:-unknown})"
+fi
+
 fuser -k 3517/tcp 2>/dev/null || true
 sleep 1
 
