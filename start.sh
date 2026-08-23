@@ -49,9 +49,9 @@ fi
 ok "Docker running"
 
 if [ ! -f katzenpost/go.mod ]; then
-  fail "katzenpost/ source missing. Run: git submodule update --init"
+  fail "katzenpost/ source missing. Ensure vendored source at katzenpost/ (see KATZENPOST_REF in .env)"
 else
-  ok "katzenpost source present (submodule)"
+  ok "katzenpost source present (vendored)"
 fi
 
 # ── 1. Generate client config from .env ────────────────────────────

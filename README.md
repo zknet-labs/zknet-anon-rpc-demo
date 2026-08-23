@@ -10,9 +10,6 @@ Anonymously route Ethereum JSON-RPC through a live mixnet.
 git clone https://github.com/Alchemi1/zknet-anon-rpc-demo.git
 cd zknet-anon-rpc-demo
 
-# Install Katzenpost submodule
-git submodule update --init --recursive
-
 # Copy environment template and edit if needed
 cp .env.example .env
 
@@ -36,7 +33,7 @@ All runtime config is in `.env` (copy from `.env.example`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `KATZENPOST_REF` | `v0.0.90` | Katzenpost git tag for submodule |
+| `KATZENPOST_REF` | `v0.0.90` | Katzenpost git tag for vendored source |
 | `VPS_HOST` | `zknode-mix` | SSH alias for VPS sync |
 | `VPS_GATEWAY_IP` | `185.92.181.101` | VPS gateway IP |
 | `VPS_GATEWAY_PORT` | `30004` | VPS gateway port |
@@ -65,6 +62,6 @@ All services talk to local `kpclientd` over thin-client protocol.
 
 ## License
 
-Demo code: **BSD-3-Clause** (see `LICENSE`).
+Demo code: **MIT** (see `LICENSE`).
 WalletShield: **AGPL-3.0-or-later** (see `walletshield/LICENSE`).
-Katzenpost: **BSD-3-Clause** (submodule, see `katzenpost/LICENSE`).
+Katzenpost: **BSD-3-Clause** (vendored source, see `katzenpost/LICENSE`).
