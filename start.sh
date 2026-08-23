@@ -3,11 +3,18 @@
 #   First run:  git clone && cd zknet-anon-rpc-demo && ./start.sh
 #   Subsequent: ./start.sh  (skips already-built artifacts)
 #
-# Dials the shared VPS mixnet gateway (tcp://185.92.181.101:30004).
+# Dials the shared VPS mixnet gateway from .env config.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
+
+# Load .env for config
+if [ -f .env ]; then
+  set -a
+  . ./.env
+  set +a
+fi
 
 # Reject legacy --local flag with helpful message
 for arg in "$@"; do
@@ -44,10 +51,20 @@ ok "Docker running"
 if [ ! -f katzenpost/go.mod ]; then
   fail "katzenpost/ source missing. Run: git submodule update --init"
 else
-  ok "katzenpost source present (vendored)"
+  ok "katzenpost source present (submodule)"
 fi
 
-# ── 1. Build mixnet Docker image ──────────────────────────────────
+# ── 1. Generate client config from .env ────────────────────────────
+
+echo ""
+echo "── Generating client config ──"
+if [ -x scripts/gen-client-config.sh ]; then
+  scripts/gen-client-config.sh
+else
+  fail "scripts/gen-client-config.sh not found or not executable"
+fi
+
+# ── 2. Build mixnet Docker image ──────────────────────────────────
 
 echo ""
 echo "── Building mixnet image ──"
@@ -60,7 +77,7 @@ else
   ok "mixnet image built: $MIXNET_IMAGE"
 fi
 
-# ── 2. Build Go tools (kps-client, kps-sendtx) ────────────────────
+# ── 3. Build Go tools (kps-client, kps-sendtx) ────────────────────
 # walletshield-kps and kps-monitor are baked into the mixnet image
 # (/usr/local/bin/*) by Dockerfile.mixnet, so no separate build is needed.
 
@@ -84,7 +101,7 @@ build_go_binary() {
 build_go_binary kps-client   kps-client
 build_go_binary kps-sendtx   kps-sendtx
 
-# ── 2b. Check for port conflicts ──────────────────────────────────
+# ── 4. Check for port conflicts ──────────────────────────────────
 
 echo ""
 echo "── Checking for port conflicts ──"
@@ -110,9 +127,12 @@ else
   ok "no port conflicts"
 fi
 
+# ── 5. Starting mixnet containers ────────────────────────────────
+
 echo ""
 echo "── Starting mixnet containers ──"
-echo "  mode: VPS (dials shared gateway tcp://185.92.181.101:30004)"
+VPS_GATEWAY="${VPS_GATEWAY_IP:-185.92.181.101}:${VPS_GATEWAY_PORT:-30004}"
+echo "  mode: VPS (dials shared gateway tcp://$VPS_GATEWAY)"
 COMPOSE_CMD=(docker compose)
 
 RUNNING_MARKER="mix-client"
@@ -123,7 +143,7 @@ else
   ok "containers starting..."
 fi
 
-# ── 5. Wait for containers ────────────────────────────────────────
+# ── 6. Wait for containers ────────────────────────────────────────
 
 echo ""
 echo "── Waiting for containers ──"
@@ -138,11 +158,7 @@ for container in "${CONTAINERS[@]}"; do
 done
 ok "$(echo "${CONTAINERS[@]}" | wc -w) containers up"
 
-# ── 5b. Ensure container DNS ───────────────────────────────────────
-# After host reboot / docker recreation, some containers can end up with an
-# empty /etc/resolv.conf (no nameservers), which breaks the servicenode's
-# http_proxy upstream lookups (DNS resolution of the RPC endpoint). Fix by
-# writing the host's nameservers into any container missing them.
+# ── 6b. Ensure container DNS ──────────────────────────────────────
 
 echo ""
 echo "── Ensuring container DNS ──"
@@ -164,7 +180,7 @@ else
   fi
 fi
 
-# ── 6. Wait for PKI consensus ─────────────────────────────────────
+# ── 7. Wait for PKI consensus ─────────────────────────────────────
 
 echo ""
 echo "── Waiting for PKI consensus ──"
@@ -192,7 +208,7 @@ else
   warn "PKI still converging — services may take longer. Re-run ./start.sh to retry."
 fi
 
-# ── 7. Start services ─────────────────────────────────────────────
+# ── 8. Start services ─────────────────────────────────────────────
 
 echo ""
 echo "── Starting services ──"
@@ -235,7 +251,7 @@ else
   ok "kps-monitor started on :9206"
 fi
 
-# ── 8. Dashboard ──────────────────────────────────────────────────
+# ── 9. Dashboard ──────────────────────────────────────────────────
 
 echo ""
 echo "── Starting dashboard ──"
@@ -259,7 +275,7 @@ nohup python3 server.py > /tmp/dashboard.log 2>&1 &
 DASHBOARD_PID=$!
 ok "dashboard started http://127.0.0.1:3517 (PID $DASHBOARD_PID)"
 
-# ── 9. Health check and summary ───────────────────────────────────
+# ── 10. Health check and summary ──────────────────────────────────
 
 echo ""
 echo "============================================"

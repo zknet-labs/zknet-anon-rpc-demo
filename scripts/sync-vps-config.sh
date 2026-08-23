@@ -27,10 +27,17 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# Load .env
+if [ -f .env ]; then
+  set -a
+  . ./.env
+  set +a
+fi
+
 VPS_HOST="${VPS_HOST:?Set VPS_HOST=user@your-vps-host before running}"
 VPS_CLIENT="${VPS_CLIENT:-katzenpost/vps-config/client/client.toml}"
 DEST="config/mixnet/client/client.toml"
-LISTEN_PORT="127.0.0.1:64332"
+LISTEN_PORT="${LISTEN_PORT:-127.0.0.1:64332}"
 
 echo "── Syncing VPS client config ──"
 echo "  VPS: $VPS_HOST:$VPS_CLIENT"
