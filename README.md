@@ -7,7 +7,7 @@ Anonymously route Ethereum JSON-RPC through a live mixnet.
 ## Quick start
 
 ```bash
-git clone https://github.com/zknet-labs/zknet-anon-rpc-demo
+git clone https://github.com/zknet-labs/zknet-anon-rpc-demo.git
 cd zknet-anon-rpc-demo
 
 # Copy environment template and edit if needed
